@@ -1,0 +1,1299 @@
+---
+title: "London Bike Sharing"
+author: "Tsun Kin Chow (tkchow2@illinois.edu), Khuong Le (kmle2@illinois.edu), Shengjia Guo(sg17@illinois.edu), Shiyong Liu (shiyong2@illinois.edu)"
+date: "16 December, 2019"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup-group, include = FALSE}
+#Run this code block before knit the whole file. Run only 1 time whenever start R to get the packages installed and read!
+#put all package you want to "package_list"
+package_list = c("readr", "tibble", "rpart", "knitr", "ggplot2", "tibble", "plyr", "rsample", "purrr", "kableExtra", "klaR", "readr", "lubridate", "knnreg", "caret", "tidyverse", "dplyr", "randomForest", "e1071", "glmnet", "rpart.plot", "ranger", "DMwR", "gbm", "ROSE", "naivebayes", "devtools", "nnet", "R.utils", "stats", "factoextra", "kernlab", "doParallel", "utils", "xgboost")
+mia_pkgs = package_list[!(package_list %in% installed.packages()[,"Package"])]
+if(length(mia_pkgs) > 0) install.packages(mia_pkgs)
+loaded_pkgs = lapply(package_list, require, character.only = TRUE)
+cluster = makeCluster(detectCores( ) - 1)
+registerDoParallel(cluster)
+```
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+***
+
+# Abstract
+
+ > Statistical learning methods were applied to bike sharing data in order identify which is a good time for sharing bikes. There will be many factors that affect this problem. A variety of learning techniques were explored and validated. Simple methods like linear regression, k-nearest neighbors, tree decision model show promises, but further data collection and and complex training method is recommended.
+
+***
+
+# Introduction
+
+Nowadays, there are many ways to share transportation, we can list out apps, like Lime and Bird, that allows user to rent a bicycle or scooters as long as they want. After you used the "transportations" you can leave it anywhere and other people will be able to find it on an application such that they can use it. We do an analysis base on TfL's free transport data service data[^1] to look at the bike that is being shared in a certain amount of time.  
+
+The classification of number of bikes sharing is essential for business to identify which is a good time to release large number of bikes to the markets, such that it can handle large amount of useage, and to decide time to get back those bikes, since there will be time that no many users going to use bikes. The prediction of the number of bikes is also crucial for customers so that customers can imagine which is a good time to leave their bikes, cars at home and choose to share a bike for their convenience. A number of features is given in this dataset such that it can provide useful information to both the customers and bike sharing companies.
+
+Statistical learning techniques were used to perform regression, multiclass classification, and classification number of bike sharing. We will splitted the project into two parts, first is regression part, where we will apply these models: random forest model, linear regression model, ridge regression model, lasso regression model, k-nearest neighbors model, decision tree model, support vector machine with linear kernel, neural network model. Secondly, we apply those methods to classification part. Since this is a relatively big data, we splitted the data into 4 seasons and each member in the group will do analysis on one of the seasons, and then report the RMSE, accuracy and test RMSE of each model. As a result, we will decide the best model after analysis on those 4 seasons and apply on the whole dataset.
+
+***
+
+## Methods
+
+For the analysis, first we will split the dataset into 4 different seasons Spring, Summer, Fall, Winter and their code for the season is 0, 1, 2, 3 perspectively. For each of the season, we will try to train different methods, different models. Then we will choose the best one in each season and do a final analysis on the whole dataset. 
+
+The following two tasks will be performed using the london bike dataset:
+
+- Regression 
+- Multiclass classification.
+
+We spited each dataset into a training set and a test set and different statistical learning models were implemented on the training set to make both regression and classification on the cnt variable. The models were cross-validated and the parameters were tuned during the training phase. Then, cross-validated RMSEs were used to choose the best regression model and the cross-validated accuracies were used to choose the best classification model. The chosen models were then fitted to the whole training set and the performance of the models were validated by the test set.
+
+## Data
+
+This dataset is collected from Kaggle[^1] containing bike rent information in London from 2015 to 2016. We downloaded the file and name it as `london_merged.csv`. This dataset contains 10 variables and 17414 observations. We're trying to predict the variable cnt, which stands for the count of bike share at a given time. Also, it might be useless for a person to know the exact amount of bikes rented at a specific time but instead a brief idea of the density of people using shared bikes so we also created a class variable indicating the density of people using shared bikes at a given time. The variable cnt is divided evenly into three groups: low, medium and high based on the 33rd percentile and 67th percentile of cnt in the whole dataset. Also, since R stores time data in a relatively vague way, we extracted the year, month, date and hour of the variable timestamp and forms new variables in order to make better predictions. The data is then spited based on seasons and statistical learning techniques are done to data within each season and the complete dataset as a whole.
+
+```{r, load-data}
+bikes = read.csv("london_merged.csv", header = TRUE)
+# Utilities function for Classifier
+splitClassifier = function(dataset, varnames, num_split) {
+  #split evenly
+  interval = quantile(dataset$cnt, probs = c(seq(1, num_split) / num_split))
+  itv = unname(interval)
+  #split certain number of classification
+  if (num_split == 3) {
+    dataset$cntClassifier = as.factor(ifelse(
+      dataset[[varnames]] >= itv[1],
+      ifelse(dataset$cnt <= itv[2], "average", "large"),
+      "small"
+    ))
+  } else if (num_split == 2) {
+    dataset$cntClassifier = as.factor(ifelse(dataset[[varnames]] >= mean(itv[1], itv[2]), "large", "small"))
+  }
+  return (dataset)
+}
+
+calc_rmse = function (a, b) {
+  y = sqrt(mean((a - b) ^ 2))
+  return (y)
+}
+
+calc_mae = function (a, b) {
+  y = mean(abs(a - b))
+  return (y)
+}
+
+calc_acc = function (a, b) {
+  y = mean(a == b)
+  return (y)
+}
+```
+
+
+```{r, setup-season, warning=FALSE}
+bikes = splitClassifier(dataset = bikes,
+                        varnames = "cnt",
+                        num_split = 3)
+bikes$year = year(bikes$timestamp)
+bikes$month = month(bikes$timestamp)
+bikes$day = day(bikes$timestamp)
+bikes$hour = hour(bikes$timestamp)
+
+set.seed(42)
+# test-train split
+bike_tst_trn_split = initial_split(bikes, prop = 0.80)
+bike_trn = training(bike_tst_trn_split)
+bike_tst = testing(bike_tst_trn_split)
+bikes_trn_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bike_trn)[, -1]
+bikes_tst_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bike_tst)[, -1]
+bikes_trn_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bike_trn)[, -1]
+bikes_tst_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bike_tst)[, -1]
+
+# estimation-validation split
+bike_est_val_split = initial_split(bike_trn, prop = 0.80)
+bike_est = training(bike_est_val_split)
+bike_val = testing(bike_est_val_split)
+
+# spring
+bikes_spring = bikes[bikes$season == 0, ]
+
+# summer
+bikes_summer = bikes[bikes$season == 1, ]
+
+# fall
+bikes_fall = bikes[bikes$season == 2, ]
+
+# winter
+bikes_winter = bikes[bikes$season == 3, ]
+```
+
+```{r, split-data-spr}
+# Spring
+set.seed(42)
+bikes_spring_tst_trn_split = initial_split(bikes_spring, prop = 0.80)
+bikes_spring_trn = training(bikes_spring_tst_trn_split)
+bikes_spring_tst = testing(bikes_spring_tst_trn_split)
+bikes_spring_trn_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_spring_trn)[, -1]
+bikes_spring_tst_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_spring_tst)[, -1]
+bikes_spring_trn_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_spring_trn)[, -1]
+bikes_spring_tst_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_spring_tst)[, -1]
+```
+
+
+```{r, split-data-sum}
+# Summer
+set.seed(42)
+bikes_summer_tst_trn_split = initial_split(bikes_summer, prop = 0.80)
+bikes_summer_trn = training(bikes_summer_tst_trn_split)
+bikes_summer_tst = testing(bikes_summer_tst_trn_split)
+bikes_summer_trn_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_summer_trn)[, -1]
+bikes_summer_tst_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_summer_tst)[, -1]
+bikes_summer_trn_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_summer_trn)[, -1]
+bikes_summer_tst_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_summer_tst)[, -1]
+```
+
+```{r, split-data-fa}
+# Fall
+set.seed(42)
+bikes_fall_tst_trn_split = initial_split(bikes_fall, prop = 0.80)
+bikes_fall_trn = training(bikes_fall_tst_trn_split)
+bikes_fall_tst = testing(bikes_fall_tst_trn_split)
+bikes_fall_trn_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_fall_trn)[, -1]
+bikes_fall_tst_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_fall_tst)[, -1]
+bikes_fall_trn_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_fall_trn)[, -1]
+bikes_fall_tst_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_fall_tst)[, -1]
+```
+
+```{r, split-data-wt}
+# Winter
+set.seed(42)
+bikes_winter_tst_trn_split = initial_split(bikes_winter, prop = 0.80)
+bikes_winter_trn = training(bikes_winter_tst_trn_split)
+bikes_winter_tst = testing(bikes_winter_tst_trn_split)
+bikes_winter_trn_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_winter_trn)[, -1]
+bikes_winter_tst_num_x = model.matrix(cnt ~ . - timestamp - season - cntClassifier, data = bikes_winter_tst)[, -1]
+bikes_winter_trn_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_winter_trn)[, -1]
+bikes_winter_tst_cat_x = model.matrix(cntClassifier ~ . - timestamp - season - cnt, data = bikes_winter_tst)[, -1]
+```
+
+## Modeling
+
+### Variables Selection
+
+First of all, we did some simple verification to determine the predictors. We plan to have three different set of predictors. Full models,  
+
+We will train models with full variables except timestamp as predictors and cnt as response. After that, we will train models with weather related variables such as `t1`, `t2`, `hum`, `wind_speed`, `weather_code`. Then, we train model base on time related variables `is_holiday`, `is_weekend`, `year`, `month`, `date`, `hour` model. We mainly have a look at some simple methods first.  
+
+- Linear Method
+
+- KNN Method
+
+- Tree Method
+
+In order to correctly evaluate each model's predicting power on number of shared bikes, we choose to split the data into estimation, validation and testing sets. The models are fit to estimation data and evaulated based on validation data. The metrics that will be used to determine each model's performance will be their relative mean absolute error. The lower the rmse and mae value, the better the model perform at predicting the response variable.
+
+```{r, warning=FALSE}
+# Full Model
+set.seed(42)
+linear_full = train(
+  cnt ~ . - timestamp - season,
+  data = bike_est,
+  method = 'lm',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+set.seed(42)
+knn_full = train(
+  cnt ~ . - timestamp - season,
+  data = bike_est,
+  method = 'knn',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+set.seed(42)
+tree_full = train(
+  cnt ~ . - timestamp - season,
+  data = bike_est,
+  method = 'rpart',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+```
+
+```{r, warning=FALSE}
+# Weather Model
+set.seed(42)
+linear_wr = train(
+  cnt ~ t1 + t2 + hum + wind_speed + weather_code,
+  data = bike_est,
+  method = 'lm',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+set.seed(42)
+knn_wr = train(
+  cnt ~ t1 + t2 + hum + wind_speed + weather_code,
+  data = bike_est,
+  method = 'knn',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+set.seed(42)
+tree_wr = train(
+  cnt ~ t1 + t2 + hum + wind_speed + weather_code,
+  data = bike_est,
+  method = 'rpart',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+```
+
+```{r, warning=FALSE}
+# Time Model
+set.seed(42)
+linear_time = train(
+  cnt ~ is_holiday + is_weekend + year + month + day + hour,
+  data = bike_est,
+  method = 'lm',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+set.seed(42)
+knn_time = train(
+  cnt ~ is_holiday + is_weekend + year + month + day + hour,
+  data = bike_est,
+  method = 'knn',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+set.seed(42)
+tree_time = train(
+  cnt ~ is_holiday + is_weekend + year + month + day + hour,
+  data = bike_est,
+  method = 'rpart',
+  trControl = trainControl(method = 'cv', number = 5)
+)
+```
+
+```{r}
+ret = tibble(
+  "Methods" = c("Linear Model", "KNN Model", "Tree Model"),
+  "Full" = c(linear_full$results$RMSE, min(knn_full$results$RMSE), min(tree_full$results$RMSE)),
+  "Weather" = c(linear_wr$results$RMSE, min(knn_wr$results$RMSE), min(tree_wr$results$RMSE)),
+  "Time" = c(linear_time$results$RMSE, min(knn_time$results$RMSE), min(tree_time$results$RMSE))
+)
+ret %>%
+  kable(digits = 2) %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+We can see that the RMSE for Full Model has the lowest values of RMSE for each case, around 550 to 750 error. Whereas the error from other Model like Weather or Time has significantly higher RMSE Value. It's safe to say that we should choose the Full Model for the rest of this analysis.
+
+### Regression 
+
+In order to predict the bike count, 8 modeling techniques are considered: random forest, k-nearest neighbors, linear regression, ridge regression, lasso regression, decision trees, support vector machine, and neural network models.
+
+- Random forest model: All predictors in the dataset are used for prediction. Out-of-bag error is used.
+- Linear regression model: All predictors in the dataset are used for prediction.
+- Ridge regression model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Lasso regression model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- k-nearest neighbors model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Decision tree model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Support vector machine with linear kernel: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Neural network model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+
+
+```{r, reg-models, warning = FALSE, results = "hide", message = FALSE, include = FALSE}
+reg_mod_1 = function(inputdata) {
+  set.seed(42)
+  y = train(
+    cnt ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+    data = inputdata,
+    method = "rf",
+    metric = "RMSE",
+    trControl = trainControl(method = "oob", allowParallel = TRUE, verboseIter = FALSE),
+    tuneLength = 8,
+    verbose = FALSE
+  )
+  #print("Done1")
+  return(y)
+}
+
+reg_mod_2 = function(inputdata) {
+  set.seed(42)
+  y = lm(cnt ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+         data = inputdata)
+  #print("Done2")
+  return(y)
+}
+
+reg_mod_3 = function(inputdata, matrixdata) {
+  set.seed(42)
+  y = cv.glmnet(
+    x = matrixdata,
+    y = inputdata$cnt,
+    nfolds = 5,
+    alpha = 0
+  )
+  #print("Done3")
+  return(y)
+}
+
+reg_mod_4 = function(inputdata, matrixdata) {
+  set.seed(42)
+  y = cv.glmnet(
+    x = matrixdata,
+    y = inputdata$cnt,
+    nfolds = 5,
+    alpha = 1
+  )
+  #print("Done4")
+  return(y)
+}
+
+reg_mod_5 = function(inputdata) {
+  set.seed(42)
+  y = train(
+    cnt ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+    data = inputdata,
+    method = "knn",
+    metric = "RMSE",
+    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+    tuneLength = 8)
+  #print("Done5")
+  return(y)
+}
+
+reg_mod_6 = function(inputdata) {
+  set.seed(42)
+  y = train(
+    cnt ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+    data = inputdata,
+    method = "rpart",
+    metric = "RMSE",
+    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+    tuneLength = 8
+  )
+  #print("Done6")
+  return(y)
+}
+
+reg_mod_7 = function(inputdata) {
+  set.seed(42)
+  y = train(
+    cnt ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+    data = inputdata,
+    method = "svmLinear",
+    metric = "RMSE",
+    verbose = FALSE,
+    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+    tuneLength = 8
+  )
+  #print("Done7")
+  return(y)
+}
+
+reg_mod_8 = function(inputdata) {
+  set.seed(42)
+  y = train(
+    cnt ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+    data = inputdata,
+    method = "nnet",
+    metric = "RMSE",
+    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+    tuneLength = 8
+  )
+  #print("Done8")
+  return(y)
+}
+
+applyfunc = function(inputdata, matrixdata) {
+  set.seed(42)
+  func = list(
+    reg_mod_1(inputdata),
+    reg_mod_2(inputdata),
+    reg_mod_3(inputdata, matrixdata),
+    reg_mod_4(inputdata, matrixdata),
+    reg_mod_5(inputdata),
+    reg_mod_6(inputdata),
+    reg_mod_7(inputdata),
+    reg_mod_8(inputdata)
+  )
+  return (func)
+}
+```
+
+```{r, run-4-reg, warning = FALSE, include = FALSE, echo = FALSE, message = FALSE}
+# Run method
+spring = map(list(bikes_spring_trn),
+             ~ applyfunc(.x, bikes_spring_trn_num_x))
+summer = map(list(bikes_summer_trn),
+             ~ applyfunc(.x, bikes_summer_trn_num_x))
+fall = map(list(bikes_fall_trn), ~ applyfunc(.x, bikes_fall_trn_num_x))
+winter = map(list(bikes_winter_trn),
+             ~ applyfunc(.x, bikes_winter_trn_num_x))
+```
+
+### Classification 
+
+In order to classify the bike count, 10 modeling techniques are considered: random forest, k-nearest neighbors, decision trees, linear discriminant analysis, quadratic discriminant analysis, Naive Bayes, multinomial logistic regression, support vector machine, neural network, and gradient boosting models.
+
+- Random forest model: All predictors in the dataset are used for prediction. Out-of-bag error is used.
+- k-nearest neighbors model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Decision tree model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Linear discriminant analysis model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Quadratic discriminant analysis model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Naive Bayes model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Multinomial logistic regression: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Support vector machine model with linear kernel function: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Neural network model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+- Gradient boosting model: All predictors in the dataset are used for prediction. 5-fold cross-validation is performed.
+
+```{r, class-models, warning = FALSE, results = "hide", message = FALSE, include = FALSE}
+class_mod_1 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                    data = inputdata,
+                    method = "rf",
+                    trControl = trainControl(method = "oob", allowParallel = TRUE, verboseIter = FALSE),
+                    tuneLength = 8,
+                    verbose = FALSE)
+  #print("Done1")
+  return(y)
+}
+
+class_mod_2 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend, 
+                    data = inputdata,
+                    method = "knn",
+                    metric = "Accuracy",
+                    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                    tuneLength = 8)
+  #print("Done2")
+  return(y) 
+}
+
+class_mod_3 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                    data = inputdata,
+                    method = "rpart",
+                    metric = "Accuracy",
+                    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                    tuneLength = 8)
+  #print("Done3")
+  return(y)
+}
+
+class_mod_4 = function(inputdata, inputmatrix) {
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                      data = inputdata,
+                      method = "lda",
+                      verbose = FALSE,
+                      metric = "Accuracy",
+                      trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE)
+                     )
+  #print("Done4")
+  return(y)
+}
+
+class_mod_5 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                    data = inputdata,
+                    method = "qda",
+                    verbose = FALSE,
+                    metric = "Accuracy",
+                    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE))
+  #print("Done5")
+  return(y)
+}
+
+class_mod_6 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                      data = inputdata,
+                      method = "naive_bayes",
+                      metric = "Accuracy",
+                      trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                      tuneLength = 8)
+  #print("Done6")
+  return(y)
+}
+
+class_mod_7 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                      data = inputdata,
+                      method = "multinom",
+                      verbose = FALSE,
+                      metric = "Accuracy",
+                      trControl =  trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                      trace = FALSE,
+                      tuneLength = 8)
+  #print("Done7")
+  return(y)
+}
+
+class_mod_8 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                      data = inputdata,
+                      method = "svmLinear",
+                      metric = "Accuracy",
+                      verbose = FALSE,
+                      trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                      tuneLength = 8)
+  #print("Done8")
+  return(y)
+}
+
+class_mod_9 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                       data = inputdata,
+                       method = "nnet",
+                       metric = "Accuracy",
+                       trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                       tuneLength = 8,
+                       verbose = FALSE)
+  #print("Done9")
+  return(y)
+}
+
+
+class_mod_10 = function(inputdata){
+  set.seed(42)
+  gbm_grid = expand.grid(interaction.depth = c(1, 2),
+                         n.trees = c(500, 1000),
+                         shrinkage = c(0.01, 0.1),
+                         n.minobsinnode = 10)
+  
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_holiday + is_weekend,
+                       data = inputdata,
+                       method = "gbm",
+                       trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                       verbose = FALSE,
+                       tuneGrid = gbm_grid)
+  #print("Done10")
+  return(y)
+}
+
+applyfunc_class = function(inputdata) {
+  set.seed(42)
+  func = list(
+    class_mod_1(inputdata),
+    class_mod_2(inputdata),
+    class_mod_3(inputdata),
+    class_mod_4(inputdata),
+    class_mod_5(inputdata),
+    class_mod_6(inputdata),
+    class_mod_7(inputdata),
+    class_mod_8(inputdata),
+    class_mod_9(inputdata),
+    class_mod_10(inputdata)
+  )
+  return (func)
+}
+```
+
+```{r, warning=FALSE, include = FALSE}
+newfall_4 = function(inputdata) {
+      set.seed(42)
+      y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_weekend,
+                          data = inputdata,
+                          method = "lda",
+                          verbose = FALSE,
+                          metric = "Accuracy",
+                          trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE),
+                         )
+      #print("Done4")
+      return(y)
+}
+newfall_5 = function(inputdata){
+  set.seed(42)
+  y = train(cntClassifier ~ t1 + t2 + hum + wind_speed + weather_code + is_weekend,
+                    data = inputdata,
+                    method = "qda",
+                    verbose = FALSE,
+                    metric = "Accuracy",
+                    trControl = trainControl(method = "cv", number = 5, allowParallel = TRUE, verboseIter = FALSE))
+  #print("Done5")
+  return(y)
+}
+```
+
+```{r, warning=FALSE}
+applyfunc_fallclass = function(inputdata) {
+  set.seed(42)
+  func = list(
+    class_mod_1(inputdata),
+    class_mod_2(inputdata),
+    class_mod_3(inputdata),
+    newfall_4(inputdata),
+    newfall_5(inputdata),
+    class_mod_6(inputdata),
+    class_mod_7(inputdata),
+    class_mod_8(inputdata),
+    class_mod_9(inputdata),
+    class_mod_10(inputdata)
+  )
+  return (func)
+}
+```
+
+```{r, run-4-class, warning = FALSE, include = FALSE}
+spring_class = map(list(bikes_spring_trn),
+                   ~ applyfunc_class(.x))
+summer_class = map(list(bikes_summer_trn),
+                   ~ applyfunc_class(.x))
+fall_class = map(list(bikes_fall_trn),
+                 ~ applyfunc_fallclass(.x))
+winter_class = map(list(bikes_winter_trn),
+                   ~ applyfunc_class(.x))
+```
+
+### Full Data
+
+To select models that best predict the bike counts for the entire year, the regression models would be trained based on the full dataset. Using the full data, 8 regression models are considered: random forest, linear regression, ridge regression, lasso regression, decision trees, support vector machine, and neural network models.
+
+Besides, to select models that best classify the bike counts for the entire year, the classification models would be trained based on the full dataset. Using the full data, 10 classification models are again considered: random forest, k-nearest neighbors, decision trees, linear discriminant analysis, quadratic discriminant analysis, Naive Bayes, multinomial logistic regression, support vector machine, neural network, and gradient boosting models.
+
+The best models
+
+```{r, calc_test_rmse, warning = FALSE, include = FALSE}
+full_test_rmse = calc_rmse(bike_tst$cnt, predict(reg_mod_5(bike_tst), data =
+                                                   bike_tst))
+spr_test_rmse = calc_rmse(bikes_spring_tst$cnt,
+                          predict(reg_mod_5(bikes_spring_tst), data = bikes_spring_tst))
+sum_test_rmse = calc_rmse(bikes_summer_tst$cnt,
+                          predict(reg_mod_5(bikes_summer_tst), data = bikes_summer_tst))
+fal_test_rmse = calc_rmse(bikes_fall_tst$cnt, predict(reg_mod_5(bikes_fall_tst), data =
+                                                        bikes_fall_tst))
+win_test_rmse = calc_rmse(bikes_winter_tst$cnt,
+                          predict(reg_mod_5(bikes_winter_tst), data = bikes_winter_tst))
+
+fullC_test_rmse = calc_acc(bike_tst$cntClassifier, predict(class_mod_2(bike_tst), data =
+                                                             bike_tst))
+sprC_test_rmse = calc_acc(bikes_spring_tst$cntClassifier,
+                          predict(class_mod_2(bikes_spring_tst), data = bikes_spring_tst))
+sumC_test_rmse = calc_acc(bikes_summer_tst$cntClassifier,
+                          predict(class_mod_2(bikes_summer_tst), data = bikes_spring_tst))
+falC_test_rmse = calc_acc(bikes_fall_tst$cntClassifier,
+                          predict(class_mod_2(bikes_fall_tst), data = bikes_fall_tst))
+winC_test_rmse = calc_acc(bikes_winter_tst$cntClassifier,
+                          predict(class_mod_2(bikes_winter_tst), data = bikes_winter_tst))
+```
+
+```{r, full-model, warning=FALSE}
+# Regression 
+full_reg = map(list(bike_trn),
+             ~ applyfunc(.x, bikes_trn_num_x))
+# Classification
+full_class = map(list(bike_trn),
+             ~ applyfunc_class(.x))
+```
+
+
+## Evaluation 
+
+To evaluate the performance of regression models, the train RMSE and MAE for different regression models are reported in the results section. Models were tuned using out-of-bag error or 5-fold cross-validation to minimize the error in prediction. Based on the train datasets, the regression models would be evaluated using the train RMSE or OOB RMSE. The regression model with the lowest train RMSE or OOB RMSE might be chosen as the best regression model of bike counts.
+
+To evaluate the performance of classification models, the train accuracy for different classification models are reported in the results section. Models were tuned using out-of-bag error or 5-fold cross-validation to maximize the accuracy in classification. Based on the train datasets, the classification models would be evaluated using the train accuracy or OOB accuracy. The classification model with the highest train accuracy or OOB accuracy might be chosen as the best model for classifying bike counts.
+
+***
+
+# Results
+
+These are results from training methods above, it's divided into regression, classification, and in each type we reported the value for models in Spring, Summer, Fall, Winter and even the Full dataset. 
+
+## Regression
+
+```{r, train-results-reg}
+options(scipen = 999)
+model_names_reg = c(
+  "Random forest",
+  "Linear regression",
+  "Ridge regression",
+  "Lasso regression",
+  "k-nearest neighbors",
+  "Decision trees",
+  "Support vector machine with linear kernel",
+  "Neural Network"
+)
+
+training_control_reg = c(
+  "Out-of-bag error",
+  "-",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation"
+)
+
+get_best_parameters = function(season) {
+  return(c(
+    paste("mtry = ", round(
+      as.numeric(season[[1]][[1]]$bestTune), digits = 4
+    ), sep = ""),
+    "-",
+    paste("λ = ", round(season[[1]][[3]]$lambda.min, digits = 4), sep = ""),
+    paste("λ = ", round(season[[1]][[4]]$lambda.min, digits = 4), sep = ""),
+    paste("k = ", round(season[[1]][[5]]$bestTune, digits = 4), sep = ""),
+    paste("cp = ", round(season[[1]][[6]]$bestTune, digits = 4), sep = ""),
+    paste("C = ", round(season[[1]][[7]]$bestTune, digits = 4), sep = ""),
+    paste(
+      "size = ",
+      round(season[[1]][[8]]$bestTune[1], 4),
+      ", ",
+      "decay = ",
+      round(season[[1]][[8]]$bestTune[2], 4),
+      sep = ""
+    )
+  ))
+}
+
+get_oob_rmse = function(season, inputdata) {
+  return (c(round(
+    calc_rmse(inputdata$cnt, predict(season[[1]][[1]])), digits = 2
+  ),
+  "-",
+  "-",
+  "-",
+  "-",
+  "-",
+  "-",
+  "-"))
+}
+
+get_train_rmse = function(season, inputdata, inputmatrix) {
+  return(c(
+    "-",
+    round(calc_rmse(
+      inputdata$cnt, predict(season[[1]][[2]], inputdata)
+    ), digits = 2),
+    round(calc_rmse(
+      inputdata$cnt,
+      predict(season[[1]][[3]], inputmatrix, s = "lambda.min", type = "class")
+    ), digits = 2),
+    round(calc_rmse(
+      inputdata$cnt,
+      predict(season[[1]][[4]], inputmatrix, s = "lambda.min", type = "class")
+    ), digits = 2),
+    round(calc_rmse(
+      inputdata$cnt, predict(season[[1]][[5]], inputdata)
+    ), digits = 2),
+    round(calc_rmse(
+      inputdata$cnt, predict(season[[1]][[6]], inputdata)
+    ), digits = 2),
+    round(calc_rmse(
+      inputdata$cnt, predict(season[[1]][[7]], inputdata)
+    ), digits = 2),
+    round(calc_rmse(
+      inputdata$cnt, predict(season[[1]][[8]], inputdata)
+    ), digits = 2)
+  ))
+}
+
+get_oob_mae = function(season, inputdata) {
+  return(c(round(
+    calc_mae(inputdata$cnt, predict(season[[1]][[1]])), digits = 2
+  ),
+  "-",
+  "-",
+  "-",
+  "-",
+  "-",
+  "-",
+  "-"))
+}
+
+get_train_mae = function(season, inputdata, inputmatrix) {
+  return(c(
+    "-",
+    round(calc_mae(
+      inputdata$cnt, predict(season[[1]][[2]], inputdata)
+    ), digits = 2),
+    round(calc_mae(
+      inputdata$cnt,
+      predict(season[[1]][[3]], inputmatrix, s = "lambda.min", type = "class")
+    ), digits = 2),
+    round(calc_mae(
+      inputdata$cnt,
+      predict(season[[1]][[4]], inputmatrix, s = "lambda.min", type = "class")
+    ), digits = 2),
+    round(calc_mae(
+      inputdata$cnt, predict(season[[1]][[5]], inputdata)
+    ), digits = 2),
+    round(calc_mae(
+      inputdata$cnt, predict(season[[1]][[6]], inputdata)
+    ), digits = 2),
+    round(calc_mae(
+      inputdata$cnt, predict(season[[1]][[7]], inputdata)
+    ), digits = 2),
+    round(calc_mae(
+      inputdata$cnt, predict(season[[1]][[8]], inputdata)
+    ), digits = 2)
+  ))
+}
+```
+
+### Spring
+
+```{r, spr-reg, warning=FALSE}
+cc_results_reg = tibble(
+  "Spring - Models" = model_names_reg,
+  "Training Control" = training_control_reg,
+  "Best Tuning Parameter(s)" = get_best_parameters(spring),
+  "OOB RMSE" = get_oob_rmse(spring, bikes_spring_trn),
+  "Train RMSE" = get_train_rmse(spring, bikes_spring_trn, bikes_spring_trn_num_x),
+  "OOB MAE" = get_oob_mae(spring, bikes_spring_trn),
+  "Train MAE" = get_train_mae(spring, bikes_spring_trn, bikes_spring_trn_num_x)
+)
+kable(cc_results_reg) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the result of spring's table, we can observe that the k-nearest neighbors model with `r get_best_parameters(spring)[5]` and using 5-fold cross-validation has the lowest RMSE with `r min(get_best_parameters(spring))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters(spring)[5]` as the best model for regression.
+
+```{r, graphical-sprresults-reg, fig.height = 4, fig.width = 12}
+plot(spring[[1]][[5]],
+     main = "k-Nearest Neighbors Model for Spring Regression",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Summer 
+
+```{r, sum-reg, warning=FALSE}
+cc_results_reg = tibble(
+  "Summer - Models" = model_names_reg,
+  "Training Control" = training_control_reg,
+  "Best Tuning Parameter(s)" = get_best_parameters(summer),
+  "OOB RMSE" = get_oob_rmse(summer, bikes_summer_trn),
+  "Train RMSE" = get_train_rmse(summer, bikes_summer_trn, bikes_summer_trn_num_x),
+  "OOB MAE" = get_oob_mae(summer, bikes_summer_trn),
+  "Train MAE" = get_train_mae(summer, bikes_summer_trn, bikes_summer_trn_num_x)
+)
+kable(cc_results_reg) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the result of summer's table, we can observe that the k-nearest neighbors model with `r get_best_parameters(summer)[5]` and using 5-fold cross-validation has the lowest RMSE with `r min(get_best_parameters(summer))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters(summer)[5]` as the best model for regression.
+
+```{r, graphical-sumresults-reg, fig.height = 4, fig.width = 12}
+plot(summer[[1]][[5]],
+     main = "k-Nearest Neighbors Model for Summer Regression",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Fall 
+
+```{r, fall-reg, warning=FALSE}
+cc_results_reg = tibble(
+  "Fall - Models" = model_names_reg,
+  "Training Control" = training_control_reg,
+  "Best Tuning Parameter(s)" = get_best_parameters(fall),
+  "OOB RMSE" = get_oob_rmse(fall, bikes_fall_trn),
+  "Train RMSE" = get_train_rmse(fall, bikes_fall_trn, bikes_fall_trn_num_x),
+  "OOB MAE" = get_oob_mae(fall, bikes_fall_trn),
+  "Train MAE" = get_train_mae(fall, bikes_fall_trn, bikes_fall_trn_num_x)
+)
+kable(cc_results_reg) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the result of fall's table, we can observe that the k-nearest neighbors model with `r get_best_parameters(fall)[5]` and using 5-fold cross-validation has the lowest RMSE with `r min(get_best_parameters(fall))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters(fall)[5]` as the best model for regression.
+
+```{r, graphical-fallresults-reg, fig.height = 4, fig.width = 12}
+plot(fall[[1]][[5]],
+     main = "k-Nearest Neighbors Model for Fall Regression",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Winter 
+
+```{r, winter-reg, warning=FALSE}
+cc_results_reg = tibble(
+  "Winter - Models" = model_names_reg,
+  "Training Control" = training_control_reg,
+  "Best Tuning Parameter(s)" = get_best_parameters(winter),
+  "OOB RMSE" = get_oob_rmse(winter, bikes_winter_trn),
+  "Train RMSE" = get_train_rmse(winter, bikes_winter_trn, bikes_winter_trn_num_x),
+  "OOB MAE" = get_oob_mae(winter, bikes_winter_trn),
+  "Train MAE" = get_train_mae(winter, bikes_winter_trn, bikes_winter_trn_num_x)
+)
+kable(cc_results_reg) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the result of winter's table, we can observe that the k-nearest neighbors model with `r get_best_parameters(winter)[5]` and using 5-fold cross-validation has the lowest RMSE with `r min(get_best_parameters(winter))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters(winter)[5]` as the best model for regression.
+
+```{r, graphical-winterresults-reg, fig.height = 4, fig.width = 12}
+plot(winter[[1]][[5]],
+     main = "k-Nearest Neighbors Model for Winter Regression",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Full Data
+
+```{r, full-reg, warning=FALSE}
+cc_results_reg = tibble(
+  "FULL - Models" = model_names_reg,
+  "Training Control" = training_control_reg,
+  "Best Tuning Parameter(s)" = get_best_parameters(full_reg),
+  "OOB RMSE" = get_oob_rmse(full_reg, bike_trn),
+  "Train RMSE" = get_train_rmse(full_reg, bike_trn, bikes_trn_num_x),
+  "OOB MAE" = get_oob_mae(full_reg, bike_trn),
+  "Train MAE" = get_train_mae(full_reg, bike_trn, bikes_trn_num_x)
+)
+kable(cc_results_reg) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the result of full-dataset's table, we can observe that the k-nearest neighbors model with `r get_best_parameters(full_reg)[5]` and using 5-fold cross-validation has the lowest RMSE with `r min(get_best_parameters(full_reg))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters(full_reg)[5]` as the best model for regression.
+
+```{r, graphical-full-reg, fig.height = 4, fig.width = 12}
+plot(winter[[1]][[5]],
+     main = "k-Nearest Neighbors Model for Full Model",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+## Multiclass Classification
+
+```{r, class-train-results-mul}
+options(scipen = 999)
+model_names_mul = c(
+  "Random forest",
+  "k-nearest neighbors",
+  "Decision trees",
+  "Linear discriminant analysis",
+  "Quadratic discriminant analysis",
+  "Naive Bayes",
+  "Multinomial logistic regression",
+  "Support vector machine with linear kernel",
+  "Neural network"
+)
+training_control_mul = c(
+  "Out-of-bag error",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation",
+  "5-fold cross-validation"
+)
+
+get_best_parameters_mul = function(season) {
+  return(c(
+    paste("mtry = ", round(
+      as.numeric(season[[1]][[1]]$bestTune), digits = 4
+    ), sep = ""),
+    paste("k = ", round(season[[1]][[2]]$bestTune, digits = 4), sep = ""),
+    paste("cp = ", round(season[[1]][[3]]$bestTune, digits = 4), sep = ""),
+    "-",
+    "-",
+    paste(
+      "laplace = ",
+      round(season[[1]][[6]]$bestTune[1], digits = 4),
+      ", ",
+      "usekernel = ",
+      season[[1]][[6]]$bestTune[2],
+      ", ",
+      "adjust = ",
+      season[[1]][[6]]$bestTune[3],
+      sep = ""
+    ),
+    paste("decay = ", round(season[[1]][[7]]$bestTune, digits = 4), sep = ""),
+    paste("C = ", round(season[[1]][[8]]$bestTune, digits = 4), sep = ""),
+    paste(
+      "size = ",
+      round(season[[1]][[9]]$bestTune[1], 4),
+      ", ",
+      "decay = ",
+      round(season[[1]][[9]]$bestTune[2], 4),
+      sep = ""
+    )
+  ))
+}
+
+get_oob_acc_mul = function(season) {
+  return(c(
+    round(
+      calc_acc(bikes_winter_trn$cntClassifier, predict(season[[1]][[1]])),
+      digits = 4
+    ),
+    "-",
+    "-",
+    "-",
+    "-",
+    "-",
+    "-",
+    "-",
+    "-"
+  ))
+}
+
+get_train_acc_mul = function(inputdata, season) {
+  return(c(
+    "-",
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[2]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[3]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[4]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[5]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[6]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[7]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[8]], inputdata)
+    ), digits = 4),
+    round(calc_acc(
+      inputdata$cntClassifier, predict(season[[1]][[9]], inputdata)
+    ), digits = 4)
+  ))
+} 
+```
+
+### Spring
+
+```{r, spr-class, warning=FALSE}
+cc_results_mul = tibble(
+  "Model" = model_names_mul,
+  "Training Control" = training_control_mul,
+  "Best Tuning Parameter(s)" = get_best_parameters_mul(spring_class),
+  "OOB Accuracy" = get_oob_acc_mul(spring_class),
+  "Train Accuracy" = get_train_acc_mul(bikes_spring_trn, spring_class)
+)
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the above table, we can observe that the k-nearest neighbors model with `r get_best_parameters_mul(spring_class)[2]` and using 5-fold cross-validation has the highest accuracy of `r max(get_oob_acc_mul(spring_class))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters_mul(spring_class)[2]` as the best model for multiclass classification.
+
+```{r, graphical-results-sprclass, fig.height = 4, fig.width = 12}
+plot(spring_class[[1]][[2]],
+     main = "k-Nearest Neighbors Model for Multiclass Classification",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Summer
+
+```{r, sum-class, warning=FALSE}
+cc_results_mul = tibble("Model" = model_names_mul,
+                        "Training Control" = training_control_mul,
+                        "Best Tuning Parameter(s)" = get_best_parameters_mul(summer_class),
+                        "OOB Accuracy" = get_oob_acc_mul(summer_class),
+                        "Train Accuracy" = get_train_acc_mul(bikes_summer_trn, summer_class))
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the above table, we can observe that the k-nearest neighbors model with `r get_best_parameters_mul(summer_class)[2]` and using 5-fold cross-validation has the highest accuracy of `r max(get_oob_acc_mul(summer_class))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters_mul(summer_class)[2]` as the best model for multiclass classification.
+
+```{r, graphical-results-sumclass-1, fig.height = 4, fig.width = 12}
+plot(summer_class[[1]][[2]],
+     main = "k-Nearest Neighbors Model for Multiclass Classification",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Fall
+
+```{r, fall-class, warning=FALSE}
+cc_results_mul = tibble("Model" = model_names_mul,
+                        "Training Control" = training_control_mul,
+                        "Best Tuning Parameter(s)" = get_best_parameters_mul(fall_class),
+                        "OOB Accuracy" = get_oob_acc_mul(fall_class),
+                        "Train Accuracy" = get_train_acc_mul(bikes_fall_trn, fall_class))
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the above table, we can observe that the k-nearest neighbors model with `r get_best_parameters_mul(fall_class)[2]` and using 5-fold cross-validation has the highest accuracy of `r max(get_oob_acc_mul(fall_class))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters_mul(fall_class)[2]` as the best model for multiclass classification.
+
+```{r, graphical-results-sumclass, fig.height = 4, fig.width = 12}
+plot(fall_class[[1]][[2]],
+     main = "k-Nearest Neighbors Model for Multiclass Classification",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Winter
+
+```{r, winter-class, warning=FALSE}
+cc_results_mul = tibble("Model" = model_names_mul,
+                        "Training Control" = training_control_mul,
+                        "Best Tuning Parameter(s)" = get_best_parameters_mul(winter_class),
+                        "OOB Accuracy" = get_oob_acc_mul(winter_class),
+                        "Train Accuracy" = get_train_acc_mul(bikes_winter_trn, winter_class))
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the above table, we can observe that the k-nearest neighbors model with `r get_best_parameters_mul(winter_class)[2]` and using 5-fold cross-validation has the highest accuracy of `r max(get_oob_acc_mul(winter_class))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters_mul(winter_class)[2]` as the best model for multiclass classification.
+
+```{r, graphical-results-full, fig.height = 4, fig.width = 12}
+plot(winter_class[[1]][[2]],
+     main = "k-Nearest Neighbors Model for Multiclass Classification",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+### Full Data
+
+```{r, full-class, warning=FALSE}
+cc_results_mul = tibble("Model" = model_names_mul,
+                        "Training Control" = training_control_mul,
+                        "Best Tuning Parameter(s)" = get_best_parameters_mul(full_class),
+                        "OOB Accuracy" = get_oob_acc_mul(full_class),
+                        "Train Accuracy" = get_train_acc_mul(bikes_winter_trn, full_class))
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+From the above table, we can observe that the k-nearest neighbors model with `r get_best_parameters_mul(full_class)[2]` and using 5-fold cross-validation has the highest accuracy of `r max(get_oob_acc_mul(full_class))` and hence, we might choose the k-nearest neighbors model with `r get_best_parameters_mul(full_class)[2]` as the best model for multiclass classification.
+
+```{r, graphical-results-winterclass, fig.height = 4, fig.width = 12}
+plot(full_class[[1]][[2]],
+     main = "k-Nearest Neighbors Model for Multiclass Classification",
+     ylab = "Train Accuracy",
+     xlab = "k")
+```
+
+Regression:
+
+From the results above, surprisingly that all of the season sub-dataset and even including that the whole dataset works best on K-nearest neighbors. Although the value of k might be different depends on the seasons, it seems that there are several k that has lower RMSE that others. For the Test RMSE, we will look at the best k that gave the smallest k possible. 
+
+Classification:
+
+From the results above, surprisingly that same with the regression, all of the season sub-dataset and even including that the whole dataset works best on K-nearest neighbors. The accuracy for different models are close to close to each other. We can see that it has around 60% of accuracy. We think that although around 60% is not a really big number, but to correctly 60% of the `r nrow(bikes)` is a big number.  
+
+***
+
+# Discussion
+
+Based on the full training dataset, the best regression model is the k-nearest neighbors model with `r get_best_parameters(full_reg)[5]` and the best classification model is the the k-nearest neighbors model with `r get_best_parameters_mul(full_class)[2]`. We select the best regression model based on train RMSE and the best classification model based on train accuracy. In the following section, we would present the metrics of the performance of the best models based on the testing datasets. The performance of the best models would then be evaluated. Some limitations of the analysis would also discussed.
+
+```{r, final-result, warning=FALSE}
+seasons = c("Full data", "Spring", "Summer", "Fall", "Winter")
+all_test = c("k-nearest neighbors", "k-nearest neighbors", "k-nearest neighbors", "k-nearest neighbors", "k-nearest neighbors")
+all_acc = c("k-nearest neighbors", "k-nearest neighbors", "k-nearest neighbors", "k-nearest neighbors", "k-nearest neighbors")
+best_tune_reg = c(get_best_parameters(full_reg)[5], get_best_parameters(spring)[5], get_best_parameters(summer)[5], get_best_parameters(fall)[5], get_best_parameters(winter)[5])
+best_tune_class = c(get_best_parameters_mul(full_class)[2], get_best_parameters_mul(spring_class)[2], get_best_parameters_mul(summer_class)[2], get_best_parameters_mul(fall_class)[2], get_best_parameters_mul(winter_class)[2])
+best_test = round(c(full_test_rmse, spr_test_rmse, sum_test_rmse, fal_test_rmse, win_test_rmse), 4)
+best_acc = round(c(fullC_test_rmse, sprC_test_rmse, sumC_test_rmse, falC_test_rmse, winC_test_rmse)*100, 4)
+```
+
+### Regression
+
+I choose the k-nearest neighbors model with `r get_best_parameters(full_reg)[5]` as the best model for regression based on full dataset.
+
+The metrics for my chosen best regression models based on the both full dataset and the datasets for the four seasons are given by:
+
+```{r}
+cc_results_mul = tibble("Data" = seasons, 
+                        "Best Model" = all_test,
+                        "Best Tuning Parameter" = best_tune_reg,
+                        "Test RMSE" = best_test)
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+According to the results based on train dataset in the results section, it is observed that the train RMSEs for the k-nearest neighbors models are 837.33, 961.87, 919.92, 733.43, and 884.4 with corresponding besting tuning parameters k = 19, k = 19, k = 19, k = 19, and k = 17 based on Spring, Summer, Fall, Winter, and full datasets respectively. The k-nearest neighbors models have lowest RMSEs among the random forest, k-nearest neighbors, linear regression, ridge regression, lasso regression, decision trees, support vector machine, and neural network models. As a result, based on train RMSEs, the k-nearest neighbors model with k = 19 might be useful and the reasonably best regression model for the four seasons, and the k-nearest neighbors model with k = 17 might be useful and the reasonably best regression model for the the entire year based on full data.
+
+In the graphs of train RMSEs versus the tuning parameters k of k-nearest neighbors models, the train RMSEs are the lowest when tuning parameters of the best regression models are equal to k = 19 for the four seasons and the train RMSE is the lowest when the tuning parameter of the best regression model is equal to k = 17 based on full data. It is discerned that, when the tuning parameters k for different models increase or decrease further, the train RMSEs might increase. As a result, based on the graphs of train RMSE versus tuning parameters k for all the models based on the four seasons and the full data, the k-nearest neighbors model with k = 19 might be useful and the reasonably best regression model for the four seasons, and the k-nearest neighbors model with k = 17 might be useful and the reasonably best regression model for the entire year based on full data.
+
+### Classification
+
+I choose the k-nearest neighbors model with `r get_best_parameters_mul(full_class)[2]` as the best model for classification based on full dataset.
+
+The metrics for my chosen best regression models based on the both full dataset and the datasets for the four seasons are given by:
+
+```{r}
+cc_results_mul = tibble("Data" = seasons, 
+                        "Best Model" = all_acc,
+                        "Best Tuning Parameter" = best_tune_class,
+                        "Test Accuracy" = best_acc)
+kable(cc_results_mul) %>%
+  kable_styling("striped", full_width = FALSE, position = "center")
+```
+
+
+```{r, de-register-parallel}
+stopCluster(cluster)
+```
+
+According to the results based on train dataset in the results section, it is observed that the train accuracies for the k-nearest neighbors models are 0.6385, 0.6664, 0.6102, 	0.5922, and 0.5544 with corresponding besting tuning parameters k = 19, k = 13, k = 13, k = 13, and k = 19 based on Spring, Summer, Fall, Winter, and full datasets respectively. The k-nearest neighbors models have highest accuracies among the random forest, k-nearest neighbors, decision trees, linear discriminant analysis, quadratic discriminant analysis, Naive Bayes, multinomial logistic regression, support vector machine, neural network, and gradient boosting models. As a result, based on train accuracies, the k-nearest neighbors model with k = 19 might be useful and the reasonably best classification model for the Spring season and the full data, and the k-nearest neighbors model with k = 13 might be useful and the reasonably best classification model for classifying bike counts in the Spring, Summer, Fall and Winter seasons.
+
+### Conclusion
+
+All in all, based on RMSE and using the full data, the best regression model is the k-nearest neighbors model with `r get_best_parameters(full_reg)[5]`. Based on accuracy and using the full data, the the best classification model is the the k-nearest neighbors model with `r get_best_parameters_mul(full_class)[2]`. From the test results, the chosen regression model has a substantially lower test RMSE of 891.9721 and the chosen classification model has a relatively higher test accuracy of 60.4825. Nevertheless, our conclusion of the best regression and classification models might in fact be dependent on different model specifications, cross-validation methods, and types of data of the bike counts in London. More predictors, variables, or information about the use of bikes in London might be useful in prediction of bike counts. It is also possible that other regression and classification models might also be estimated that give different conclusions. Further discussion on the choice of models and the evaluation of statistical learning models might be needed in the foreseeable future.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `timestamp` - timestamp field for grouping the data 
+
+- `cnt` - the count of a new bike shares 
+
+- `t1` - real temperature in C 
+
+- `t2` - temperature in C "feels like" 
+
+- `hum` - humidity in percentage 
+
+- `wind_speed` - wind speed in km/h 
+
+- `weather_code` - category of the weather 
+
+- `is_holiday` - boolean field - 1 holiday / 0 non holiday 
+
+- `is_weekend` - boolean field - 1 if the day is weekend 
+
+- `season` - category field meteorological seasons: 0-spring ; 1-summer; 2-fall; 3-winter.
+
+
+"weathe_code" category description: 
+
+- 1 = Clear ; mostly clear but have some values with haze/fog/patches of fog/ fog in vicinity 
+
+- 2 = scattered clouds / few clouds 
+
+- 3 = Broken clouds 
+
+- 4 = Cloudy 
+
+- 7 = Rain/ light Rain shower/ Light rain 
+
+- 10 = rain with thunderstorm 
+
+- 26 = snowfall 
+
+- 94 = Freezing Fog 
+
+
+For additional background on the data, see the data source.
+
+[^1]: [London bike sharing dataset](https://www.kaggle.com/hmavrodiev/london-bike-sharing-dataset)
